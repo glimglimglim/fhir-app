@@ -117,7 +117,7 @@ st.set_page_config(page_title="FHIR Extractor", layout="centered")
 st.title("📄 ➜ 🩺  FHIR Extractor for Medical Documents")
 
 st.markdown(
-    "Ufsdfspload a medical PDF or image and receive structured **FHIR R4 JSON** "
+    "Upload a medical PDF or image and receive structured **FHIR R4 JSON** "
     "extracted with **GPT‑4o‑mini**. No data is stored server‑side."
 )
 
@@ -153,54 +153,44 @@ uploaded_file = st.file_uploader(
 # A small stateful flag so the preview checkbox only shows after a successful run.
 show_images = st.session_state.get("show_images", False)
 
-col1, col2 = st.columns(2)
+if uploaded_file and (openai.api_key or api_key_input):
+    if st.button("🚀 Extract FHIR JSON", type="primary"):
+        suffix = Path(uploaded_file.name).suffix
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded_file.getbuffer())
+            tmp_path = Path(tmp.name)
 
-with col1:
-    if uploaded_file and (openai.api_key or api_key_input):
-        if st.button("🚀 Extract FHIR JSON", type="primary"):
-            suffix = Path(uploaded_file.name).suffix
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(uploaded_file.getbuffer())
-                tmp_path = Path(tmp.name)
+        with st.spinner("Converting file …"):
+            try:
+                b64_chunks = file_to_base64_chunks(tmp_path)
+                images = _file_to_images(tmp_path)
+            except Exception as e:
+                st.error(f"Error processing file: {e}")
+                st.stop()
 
-            with st.spinner("Converting file …"):
-                try:
-                    b64_chunks = file_to_base64_chunks(tmp_path)
-                except Exception as e:
-                    st.error(f"Error processing file: {e}")
-                    st.stop()
+        with st.spinner(f"Sending {len(b64_chunks)} page(s)/image(s) to GPT‑4o‑mini …"):
+            try:
+                fhir_json = gpt4o_fhir_from_images(b64_chunks)
+            except Exception as e:
+                st.error(f"OpenAI API error: {e}")
+                st.stop()
 
-            with st.spinner(f"Sending {len(b64_chunks)} page(s)/image(s) to GPT‑4o‑mini …"):
-                try:
-                    fhir_json = gpt4o_fhir_from_images(b64_chunks)
-                except Exception as e:
-                    st.error(f"OpenAI API error: {e}")
-                    st.stop()
+        st.success("FHIR extraction complete!")
 
-            st.success("FHIR extraction complete!")
-            st.subheader("FHIR R4 JSON")
+        # Side-by-side layout
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("🖼️ Converted Image(s)")
+            for idx, img in enumerate(images, start=1):
+                st.image(img, caption=f"Page {idx}", use_column_width=True)
+
+        with col2:
+            st.subheader("🧾 FHIR R4 JSON")
             st.json(fhir_json, expanded=True)
-
             st.download_button(
                 label="💾 Download JSON",
                 data=json.dumps(fhir_json, indent=2),
                 file_name=f"{Path(uploaded_file.name).stem}_fhir.json",
                 mime="application/json",
             )
-
-            st.session_state.show_images = True
-            show_images = True
-
-with col2:
-    if show_images and uploaded_file:
-        if st.checkbox("Show converted images", value=False):
-            suffix = Path(uploaded_file.name).suffix
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(uploaded_file.getbuffer())
-                tmp_path = Path(tmp.name)
-            try:
-                images = _file_to_images(tmp_path)
-                for idx, img in enumerate(images, start=1):
-                    st.image(img, caption=f"Page {idx}", use_column_width=True)
-            except Exception as e:
-                st.error(f"Could not display images: {e}")
