@@ -179,7 +179,7 @@ with col1:
 
             st.success("FHIR extraction complete!")
             st.subheader("FHIR R4 JSON")
-            st.json(fhir_json, expanded=False)
+            st.json(fhir_json, expanded=True)
 
             st.download_button(
                 label="💾 Download JSON",
