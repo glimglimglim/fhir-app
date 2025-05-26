@@ -117,7 +117,7 @@ st.set_page_config(page_title="FHIR Extractor", layout="centered")
 st.title("📄 ➜ 🩺  FHIR Extractor for Medical Documents")
 
 st.markdown(
-    "Upload a medical PDF or image and receive structured **FHIR R4 JSON** "
+    "Ufsdfspload a medical PDF or image and receive structured **FHIR R4 JSON** "
     "extracted with **GPT‑4o‑mini**. No data is stored server‑side."
 )
 
