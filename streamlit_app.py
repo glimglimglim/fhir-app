@@ -118,7 +118,7 @@ st.title("📄 ➜ 🩺  FHIR Extractor for Medical Documents")
 
 st.markdown(
     "Upload a medical PDF or image and receive structured **FHIR R4 JSON** "
-    "extracted with **GPT‑4o‑mini**. No data is stored server‑side."
+    "No data is stored server‑side."
 )
 
 with st.sidebar:
