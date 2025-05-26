@@ -183,7 +183,7 @@ if uploaded_file and (openai.api_key or api_key_input):
         with col1:
             st.subheader("🖼️ Converted Image(s)")
             for idx, img in enumerate(images, start=1):
-                st.image(img, caption=f"Page {idx}", use_column_width=True)
+                st.image(img, caption=f"Page {idx}", use_container_width==True)
 
         with col2:
             st.subheader("🧾 FHIR R4 JSON")
