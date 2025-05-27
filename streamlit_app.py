@@ -122,28 +122,26 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.header("🔑 OpenAI API Key")
-    # Gracefully attempt to read a default key from secrets.toml *or* env‑var.
-    try:
-        default_key = st.secrets["OPENAI_API_KEY"]
-    except Exception:  # No secrets file or key missing.
-        default_key = os.getenv("OPENAI_API_KEY", "")
+    st.header("🔑 OpenAI API Key")
 
-    api_key_input = st.text_input(
-        "Enter your OpenAI API key",
-        value=default_key,
-        type="password",
-        placeholder="sk‑...",
-    )
+    # 1️⃣  Look for a key in secrets…
+    api_key = st.secrets.get("OPENAI_API_KEY")
 
-    if api_key_input:
-        openai.api_key = api_key_input
-    elif os.getenv("OPENAI_API_KEY"):
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+    # 2️⃣  …or fall back to an env-var for local dev.
+    if not api_key:
+        api_key = os.getenv("OPENAI_API_KEY")
 
-    st.markdown(
-        "---\n⚠️ **Privacy reminder:** ensure you are authorised to process any patient data you upload."
-    )
+    if api_key:
+        openai.api_key = api_key
+        st.success("API key loaded from server-side secrets.")
+    else:
+        st.error(
+            "API key not found. Add it to `.streamlit/secrets.toml`, "
+            "the Secrets manager on Streamlit Cloud, or the "
+            "`OPENAI_API_KEY` environment variable on your host."
+        )
+        st.stop()
+
 
 uploaded_file = st.file_uploader(
     "Choose a PDF or image",
