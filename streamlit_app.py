@@ -1,16 +1,16 @@
 """
-Streamlit app to extract FHIR R4 JSON from medical PDFs **or images** with GPT‑4o.
+Streamlit app to extract FHIR R4 JSON from medical PDFs **or images** with GPT‑4o.
+
+Key change: PDFs are passed **directly as base‑64‐encoded data URLs**, so GPT‑4o‑mini parses the raw PDF without Vision.
+
+This revision also hardens secret handling: if no secrets.toml is present, the app now *silently falls back* to an environment variable or manual input, instead of crashing with `StreamlitSecretNotFoundError`.
 
 Dependencies:
     pip install streamlit openai pillow
 
 Run from a terminal with:
     streamlit run streamlit_app.py
-
-Running it via plain `python streamlit_app.py` will not spin‑up the Streamlit
-server and will show *ScriptRunContext* warnings.
 """
-
 from __future__ import annotations
 
 import base64
@@ -29,10 +29,9 @@ from PIL import Image
 ###############################################################################
 # Configuration
 ###############################################################################
-
 SYSTEM_PROMPT: str = (
     "You are a medical data extractor. "
-    "Return **only valid FHIR R4 JSON** that captures every clinical datum from the input. "
+    "Return **only valid FHIR R4 JSON** that captures every clinical datum from the input. "
     "If uncertain about a value, omit it or leave the field empty—do not invent data."
 )
 
@@ -48,17 +47,13 @@ def _pil_to_base64(img: Image.Image) -> str:
 
 
 def build_content_for_file(path: Path) -> List[dict]:
-    """Return the `content` list element(s) for the Chat API message.
+    """Build the `content` payload for the Chat API message.
 
-    * Images are converted to base‑64 data URLs inline (so no external hosting).
-    * PDFs are uploaded to OpenAI with `purpose="vision"` and then referenced
-      via `image_file`—letting GPT‑4o do the PDF → image rendering internally.
+    * Images → base‑64 PNG data URLs.
+    * PDFs  → base‑64 **PDF** data URLs.
     """
     mime, _ = mimetypes.guess_type(path)
 
-    # ----------------------------------------------------------------------------
-    # Images
-    # ----------------------------------------------------------------------------
     if mime and mime.startswith("image/"):
         img = Image.open(path).convert("RGB")
         b64 = _pil_to_base64(img)
@@ -72,17 +67,14 @@ def build_content_for_file(path: Path) -> List[dict]:
             }
         ]
 
-    # ----------------------------------------------------------------------------
-    # PDFs
-    # ----------------------------------------------------------------------------
     if mime == "application/pdf":
         with open(path, "rb") as f:
-            file = openai.files.create(file=f, purpose="vision")
+            b64 = base64.b64encode(f.read()).decode()
         return [
             {
-                "type": "image_file",
-                "image_file": {
-                    "file_id": file.id,
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:application/pdf;base64,{b64}",
                     "detail": "high",
                 },
             }
@@ -92,13 +84,10 @@ def build_content_for_file(path: Path) -> List[dict]:
 
 
 def gpt4o_fhir_from_file(path: Path) -> dict:
-    """Send the uploaded document/image to GPT‑4o and return FHIR JSON as dict."""
+    """Send the uploaded document/image to GPT‑4o‑mini and return FHIR JSON."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": build_content_for_file(path),
-        },
+        {"role": "user", "content": build_content_for_file(path)},
     ]
 
     resp = openai.chat.completions.create(
@@ -109,32 +98,34 @@ def gpt4o_fhir_from_file(path: Path) -> dict:
         stream=False,
         max_tokens=4096,
     )
-
     return json.loads(resp.choices[0].message.content)
 
 ###############################################################################
 # Streamlit UI
 ###############################################################################
 
-st.set_page_config(page_title="FHIR Extractor", layout="centered")
-st.title("📄 ➜ 🩺  FHIR Extractor for Medical Documents")
+st.set_page_config(page_title="FHIR Extractor", layout="centered")
+st.title("📄 ➜ 🩺  FHIR Extractor for Medical Documents")
 
 st.markdown(
-    "Upload a medical PDF or image and receive structured **FHIR R4 JSON**.\n"
+    "Upload a medical PDF or image and receive structured **FHIR R4 JSON**.\n"
     "No data is stored server‑side."
 )
 
 with st.sidebar:
     st.header("🔑 OpenAI API Key")
 
-    # 1️⃣ Look for a key in secrets…
-    api_key = st.secrets.get("OPENAI_API_KEY")
+    # 1️⃣ Try secrets.toml first (won't crash if missing).
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        api_key = None
 
-    # 2️⃣ …or fall back to an env‑var for local dev.
+    # 2️⃣ Fall back to an env‑var for local dev.
     if not api_key:
         api_key = os.getenv("OPENAI_API_KEY")
 
-    # 3️⃣ If still missing, let the user paste it.
+    # 3️⃣ If still missing, prompt the user.
     if not api_key:
         api_key = st.text_input("Enter OpenAI API Key", type="password")
 
@@ -143,7 +134,7 @@ with st.sidebar:
         st.success("API key loaded.")
     else:
         st.error(
-            "API key not found. Add it to `.streamlit/secrets.toml`, the "
+            "API key not found. Add it to `.streamlit/secrets.toml`, set the "
             "`OPENAI_API_KEY` environment variable, or paste it above."
         )
         st.stop()
@@ -173,8 +164,10 @@ if uploaded_file and openai.api_key:
         if mime and mime.startswith("image/"):
             st.subheader("🖼️ Image preview")
             st.image(tmp_path, use_container_width=True)
+        elif mime == "application/pdf":
+            st.info("PDF uploaded and sent as base‑64. Preview not available.")
         else:
-            st.info("PDF uploaded. Preview not available without Poppler/`pdf2image`.")
+            st.info("File uploaded but preview not available.")
 
         st.subheader("🧾 FHIR R4 JSON")
         st.json(fhir_json, expanded=True)
