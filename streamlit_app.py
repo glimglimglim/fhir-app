@@ -1,12 +1,12 @@
 """
 Streamlit app to extract FHIR R4 JSON from medical PDFs **or images** with GPT‑4o.
 
-Key change: PDFs are passed **directly as base‑64‐encoded data URLs**, so GPT‑4o‑mini parses the raw PDF without Vision.
+🛠 **Fix:** The OpenAI vision endpoint (even in GPT‑4o‑mini) only accepts `gif`, `jpeg/jpg`, `png`, or `webp`.  Raw PDFs over `data:application/pdf;base64,…` trigger a **400 – invalid file format**.  
 
-This revision also hardens secret handling: if no secrets.toml is present, the app now *silently falls back* to an environment variable or manual input, instead of crashing with `StreamlitSecretNotFoundError`.
+We therefore render each PDF page to PNG in‑memory (via **PyMuPDF**) and send those images instead.  Users who upload images continue to be sent as‑is.
 
 Dependencies:
-    pip install streamlit openai pillow
+    pip install streamlit openai pillow pymupdf
 
 Run from a terminal with:
     streamlit run streamlit_app.py
@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import List
 
+import fitz  # PyMuPDF
 import openai
 import streamlit as st
 from PIL import Image
@@ -35,25 +36,38 @@ SYSTEM_PROMPT: str = (
     "If uncertain about a value, omit it or leave the field empty—do not invent data."
 )
 
+# Max pages to render from each PDF to limit cost/payload
+MAX_PDF_PAGES = 5
+
 ###############################################################################
 # Utility functions
 ###############################################################################
 
 def _pil_to_base64(img: Image.Image) -> str:
-    """Convert a PIL Image to a base‑64‑encoded PNG string (without the prefix)."""
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def build_content_for_file(path: Path) -> List[dict]:
-    """Build the `content` payload for the Chat API message.
+def _pdf_to_png_base64_list(path: Path, max_pages: int = MAX_PDF_PAGES) -> List[str]:
+    """Return list of base‑64 PNG strings (no prefix) for first *max_pages*."""
+    pngs: List[str] = []
+    doc = fitz.open(path)
+    zoom = 2  # 2× scale for clarity
+    mat = fitz.Matrix(zoom, zoom)
+    for p in range(min(len(doc), max_pages)):
+        pix = doc.load_page(p).get_pixmap(matrix=mat, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        pngs.append(_pil_to_base64(img))
+    doc.close()
+    return pngs
 
-    * Images → base‑64 PNG data URLs.
-    * PDFs  → base‑64 **PDF** data URLs.
-    """
+
+def build_content_for_file(path: Path) -> List[dict]:
+    """Build the `content` elements for Chat API message."""
     mime, _ = mimetypes.guess_type(path)
 
+    # Images — send directly
     if mime and mime.startswith("image/"):
         img = Image.open(path).convert("RGB")
         b64 = _pil_to_base64(img)
@@ -67,24 +81,28 @@ def build_content_for_file(path: Path) -> List[dict]:
             }
         ]
 
+    # PDFs — render pages → PNG base64
     if mime == "application/pdf":
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        return [
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:application/pdf;base64,{b64}",
-                    "detail": "high",
-                },
-            }
-        ]
+        b64_list = _pdf_to_png_base64_list(path)
+        if not b64_list:
+            raise ValueError("PDF contained no pages.")
+        contents: List[dict] = []
+        for b64 in b64_list:
+            contents.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{b64}",
+                        "detail": "high",
+                    },
+                }
+            )
+        return contents
 
     raise ValueError(f"Unsupported file type: {path}")
 
 
 def gpt4o_fhir_from_file(path: Path) -> dict:
-    """Send the uploaded document/image to GPT‑4o‑mini and return FHIR JSON."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_content_for_file(path)},
@@ -115,17 +133,14 @@ st.markdown(
 with st.sidebar:
     st.header("🔑 OpenAI API Key")
 
-    # 1️⃣ Try secrets.toml first (won't crash if missing).
     try:
         api_key = st.secrets["OPENAI_API_KEY"]
     except Exception:
         api_key = None
 
-    # 2️⃣ Fall back to an env‑var for local dev.
     if not api_key:
         api_key = os.getenv("OPENAI_API_KEY")
 
-    # 3️⃣ If still missing, prompt the user.
     if not api_key:
         api_key = st.text_input("Enter OpenAI API Key", type="password")
 
@@ -133,10 +148,7 @@ with st.sidebar:
         openai.api_key = api_key
         st.success("API key loaded.")
     else:
-        st.error(
-            "API key not found. Add it to `.streamlit/secrets.toml`, set the "
-            "`OPENAI_API_KEY` environment variable, or paste it above."
-        )
+        st.error("OpenAI API key not found. Provide one to continue.")
         st.stop()
 
 uploaded_file = st.file_uploader(
@@ -165,7 +177,12 @@ if uploaded_file and openai.api_key:
             st.subheader("🖼️ Image preview")
             st.image(tmp_path, use_container_width=True)
         elif mime == "application/pdf":
-            st.info("PDF uploaded and sent as base‑64. Preview not available.")
+            try:
+                first_page = _pdf_to_png_base64_list(tmp_path, max_pages=1)[0]
+                st.subheader("📄 PDF preview – page 1")
+                st.image(f"data:image/png;base64,{first_page}")
+            except Exception:
+                st.info("PDF preview unavailable.")
         else:
             st.info("File uploaded but preview not available.")
 
